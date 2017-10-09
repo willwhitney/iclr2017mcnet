@@ -61,7 +61,7 @@ def show(sequence):
     else:
         img = img.numpy()
         
-    plt.imshow(img, interpolation='bilinear')
+    plt.imshow(img[:, :, ::-1], interpolation='bilinear')
     plt.show()
     plt.close(fig)
 
@@ -109,6 +109,7 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
               + "_beta=" + str(beta)
               + "_lr=" + str(lr)
               + "_nonlin=" + str(nonlinearity)
+              + "_res=" + str(residual)
               + "_gdl=" + str(gdl))
 
     print("\n" + prefix + "\n")
@@ -154,8 +155,13 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
         d_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
             model.d_loss, var_list=model.d_vars
         )
+        # facd_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
+        #     model.facd_loss, var_list=model.facd_vars
+        # )
         g_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
-            alpha * model.L_img + beta * model.L_GAN, var_list=model.g_vars
+            # alpha * model.L_img + beta * model.L_GAN + gamma * model.L_FAC, 
+            alpha * model.L_img + beta * model.L_GAN, 
+            var_list=model.g_vars
         )
         print("GDL: ", model.gdl_weight)
 
@@ -250,7 +256,7 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
                         generations = np.concatenate((generations, sbatch), axis=0)
                         print("Saving sample ...")
                         # ipdb.set_trace()
-                        save_images(generations, [2, T + K],
+                        save_images(generations[:, :, :, ::-1], [2, T + K],
                                     samples_dir + "train_%s.png" % (iters))
                     if np.mod(counter, 500) == 2:
                         model.save(sess, checkpoint_dir, counter)

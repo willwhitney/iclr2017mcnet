@@ -11,13 +11,14 @@ import ipdb
 class FactoredMCNET(object):
     def __init__(self, image_size, batch_size=32, c_dim=3,
                  K=10, T=10, checkpoint_dir=None, is_train=True, nonlinearity="tanh",
-                 gdl_weight=1.0):
+                 gdl_weight=1.0, residual=True):
 
         self.batch_size = batch_size
         self.image_size = image_size
         self.is_train = is_train
         self.nonlinearity = nonlinearity
         self.gdl_weight = gdl_weight
+        self.res_weight = 1.0 if residual else 0.0
 
         self.gf_dim = 64
         self.df_dim = 64
@@ -43,7 +44,34 @@ class FactoredMCNET(object):
 
         cell = BasicConvLSTMCell([self.image_size[0] / 8, self.image_size[1] / 8],
                                  [3, 3], 256)
-        pred = self.forward(self.diff_in, self.xt, cell)
+        pred, latents = self.forward(self.diff_in, self.xt, cell)
+        # latents_Einput = tf.concat(latents, 0)
+        # latents_Etarget = tf.ones(latents_Einput.shape) / 2
+
+        # true_latents, false_latents = [], []
+        # for latent in latents:
+        #     true_latents.append(latents[:self.batch_size//2])
+        #     z1 = latents[self.batch_size//2:, :latent.shape[1]//2]
+        #     z2 = latents[self.batch_size//2:, latent.shape[1]//2:]
+        #     z2 = tf.random_shuffle(z2)
+        #     false_latent = tf.concat([z1, z2], 1)
+        #     false_latents.append(false_latent)
+        # true_latents = tf.concat(true_latents, 0)
+        # false_latents = tf.concat(false_latents, 0)
+
+        true_latents = tf.concat(latents, 0)
+        false_latents = []
+        for latent in latents:
+            # shuffle the z1s and z2s within each timestep to get false examples
+            z1 = latents[:, :latent.shape[1]//2]
+            z2 = latents[:, latent.shape[1]//2:]
+            z2 = tf.random_shuffle(z2)
+            false_latent = tf.concat([z1, z2], 1)
+            false_latents.append(false_latent)
+        false_latents = tf.concat(false_latents, 0)
+        # latents_Dinput = tf.concat((true_latents, false_latents), 0)
+        # latents_Dtarget = tf.concat((tf.ones(true_latents.shape),
+        #                             tf.zeros(false_latents.shape)), 0)
 
         self.G = tf.concat(axis=3, values=pred)
         if self.is_train:
@@ -78,12 +106,6 @@ class FactoredMCNET(object):
             with tf.variable_scope("DIS", reuse=True):
                 self.D_, self.D_logits_ = self.discriminator(gen_data)
 
-            self.L_p = tf.reduce_mean(
-                tf.square(self.G - self.target[:, :, :, self.K:, :])
-            )
-            self.L_gdl = gdl(gen_sim, true_sim, 1.)
-            self.L_img = self.L_p + self.gdl_weight * self.L_gdl
-
             self.d_loss_real = tf.reduce_mean(
                 tf.nn.sigmoid_cross_entropy_with_logits(
                     logits=self.D_logits, labels=tf.ones_like(self.D)
@@ -94,6 +116,32 @@ class FactoredMCNET(object):
                     logits=self.D_logits_, labels=tf.zeros_like(self.D_)
                 )
             )
+
+            with tf.variable_scope("FAC", reuse=False):
+                self.FacD, self.FacD_logits = self.factor_discriminator(true_latents)
+
+            with tf.variable_scope("FAC", reuse=True):
+                self.FacD_, self.FacD_logits_ = self.factor_discriminator(false_latents)
+
+            self.facd_loss_real = tf.reduce_mean(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                    logits=self.FacD_logits, labels=tf.ones_like(self.FacD)
+                )
+            )
+            self.facd_loss_fake = tf.reduce_mean(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                    logits=self.FacD_logits_, labels=tf.zeros_like(self.FacD_)
+                )
+            )
+
+            self.L_p = tf.reduce_mean(
+                tf.square(self.G - self.target[:, :, :, self.K:, :])
+            )
+            self.L_gdl = gdl(gen_sim, true_sim, 1.)
+            self.L_img = self.L_p + self.gdl_weight * self.L_gdl
+
+            self.facd_loss = self.facd_loss_real + self.facd_loss_fake
+
             self.d_loss = self.d_loss_real + self.d_loss_fake
             self.L_GAN = tf.reduce_mean(
                 tf.nn.sigmoid_cross_entropy_with_logits(
@@ -101,19 +149,32 @@ class FactoredMCNET(object):
                 )
             )
 
+            self.L_FAC = tf.reduce_mean(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                    logits=FacD_logits, labels=(tf.ones_like(self.D_)/2)
+                )
+            )
+
             self.loss_sum = tf.summary.scalar("L_img", self.L_img)
             self.L_p_sum = tf.summary.scalar("L_p", self.L_p)
             self.L_gdl_sum = tf.summary.scalar("L_gdl", self.L_gdl)
             self.L_GAN_sum = tf.summary.scalar("L_GAN", self.L_GAN)
+            self.L_FAC_sum = tf.summary.scalar("L_FAC", self.L_FAC)
             self.d_loss_sum = tf.summary.scalar("d_loss", self.d_loss)
             self.d_loss_real_sum = tf.summary.scalar(
                 "d_loss_real", self.d_loss_real)
             self.d_loss_fake_sum = tf.summary.scalar(
                 "d_loss_fake", self.d_loss_fake)
+            self.facd_loss_real_sum = tf.summary.scalar(
+                "facd_loss_real", self.facd_loss_real)
+            self.facd_loss_fake_sum = tf.summary.scalar(
+                "facd_loss_fake", self.facd_loss_fake)
 
             self.t_vars = tf.trainable_variables()
-            self.g_vars = [var for var in self.t_vars if 'DIS' not in var.name]
+            self.g_vars = [var for var in self.t_vars
+                           if 'DIS' not in var.name and 'FAC' not in var.name]
             self.d_vars = [var for var in self.t_vars if 'DIS' in var.name]
+            self.fac_vars = [var for var in self.t_vars if 'FAC' in var.name]
             num_param = 0.0
             for var in self.g_vars:
                 num_param += int(np.prod(var.get_shape()))
@@ -132,21 +193,26 @@ class FactoredMCNET(object):
             reuse = True
 
         pred = []
+        latents = []
         # Decoder
         for t in range(self.T):
+            # for t=0 we can use the encoding of the motion we already have
+            # for t>0 we need to run cell forward on one more image
             if t == 0:
                 h_cont, res_c = self.content_enc(xt, reuse=False)
                 h_tp1 = self.comb_layers(h_dyn, h_cont, reuse=False)
-                res_connect = self.residual(res_m, res_c, reuse=False)
+                res_connect = [self.res_weight * r for r in
+                               self.residual(res_m, res_c, reuse=False)]
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=False)
             else:
                 enc_h, res_m = self.motion_enc(diff_in, reuse=True)
                 h_dyn, state = cell(enc_h, state, scope='lstm', reuse=True)
                 h_cont, res_c = self.content_enc(xt, reuse=reuse)
                 h_tp1 = self.comb_layers(h_dyn, h_cont, reuse=True)
-                res_connect = self.residual(res_m, res_c, reuse=True)
+                res_connect = [self.res_weight * r for r in
+                               self.residual(res_m, res_c, reuse=True)]
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=True)
-
+            latents.append(h_dyn)
             if self.c_dim == 3:
                 # Network outputs are BGR so they need to be reversed to use
                 # rgb_to_grayscale
@@ -172,7 +238,7 @@ class FactoredMCNET(object):
             pred.append(tf.reshape(x_hat, [self.batch_size, self.image_size[0],
                                            self.image_size[1], 1, self.c_dim]))
 
-        return pred
+        return pred, latents
 
     def motion_enc(self, diff_in, reuse):
         res_in = []
@@ -296,7 +362,12 @@ class FactoredMCNET(object):
 
         return tf.nn.sigmoid(h), h
 
-    # def factor_discriminator(self, latents):
+    def factor_discriminator(self, latents):
+        h0 = lrelu(linear(latents, 128, name='fac_dis_h0_lin'))
+        h1 = lrelu(linear(h0, 128, name='fac_dis_h1_lin'))
+        # h2 = lrelu(linear(h1, 128, name='fac_dis_h2_lin'))
+        out = linear(h1, 1, name='fac_dis_out_lin')
+        return tf.nn.sigmoid(out), out
 
 
     def save(self, sess, checkpoint_dir, step):

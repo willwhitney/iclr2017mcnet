@@ -137,16 +137,16 @@ class MCNET(object):
             if t == 0:
                 h_cont, res_c = self.content_enc(xt, reuse=False)
                 h_tp1 = self.comb_layers(h_dyn, h_cont, reuse=False)
-                res_connect = self.res_weight * self.residual(
-                    res_m, res_c, reuse=False)
+                res_connect = [self.res_weight * r for r in
+                               self.residual(res_m, res_c, reuse=False)]
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=False)
             else:
                 enc_h, res_m = self.motion_enc(diff_in, reuse=True)
                 h_dyn, state = cell(enc_h, state, scope='lstm', reuse=True)
                 h_cont, res_c = self.content_enc(xt, reuse=reuse)
                 h_tp1 = self.comb_layers(h_dyn, h_cont, reuse=True)
-                res_connect = self.res_weight * self.residual(
-                    res_m, res_c, reuse=True)
+                res_connect = [self.res_weight * r for r in
+                               self.residual(res_m, res_c, reuse=True)]
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=True)
 
             if self.c_dim == 3:

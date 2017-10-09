@@ -416,7 +416,7 @@ def normalize_data(data, channels, K, sequence):
     # move sequence channel to one away from the end
     sequence.transpose_(0, 1).transpose_(1, 2)
     sequence = sequence.cpu().numpy()
-    sequence = transform_from01(sequence)
+    sequence = transform_from01(sequence)[:, :, :, ::-1].copy()
     # ipdb.set_trace()
     diff = make_diffs(sequence, K)
 
