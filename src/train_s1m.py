@@ -97,7 +97,7 @@ def main(lr, batch_size, alpha, beta, K, T, num_iter, gpu):
                                                  for f, p, k, t in zip(tfiles,
                                                                        paths,
                                                                        Ks, Ts))
-            for i in xrange(batch_size):
+            for i in range(batch_size):
               seq_batch[i]  = output[i][0]
               diff_batch[i] = output[i][1]
 

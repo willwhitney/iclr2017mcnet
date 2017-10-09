@@ -1,0 +1,10 @@
+.ipynb_checkpoints/
+.vscode/
+__pycache__/
+.DS_Store
+._*
+models/
+samples/
+logs/
+data/
+**.h5

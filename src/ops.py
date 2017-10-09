@@ -1,6 +1,7 @@
 import math
 import numpy as np 
 import tensorflow as tf
+import ipdb
 
 from tensorflow.python.framework import ops
 
@@ -31,12 +32,14 @@ def deconv2d(input_, output_shape,
            k_h=5, k_w=5, d_h=2, d_w=2, stddev=0.02,
            name="deconv2d", reuse=False, with_w=False, padding='SAME'):
   with tf.variable_scope(name, reuse=reuse):
+    output_shape = [int(d) for d in output_shape]
     # filter : [height, width, output_channels, in_channels]
     w = tf.get_variable('w', [k_h, k_h, output_shape[-1],
                               input_.get_shape()[-1]],
                         initializer=tf.contrib.layers.xavier_initializer())
     
     try:
+      # ipdb.set_trace()
       deconv = tf.nn.conv2d_transpose(input_, w,
                                       output_shape=output_shape,
                                       strides=[1, d_h, d_w, 1],

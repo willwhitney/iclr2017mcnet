@@ -7,17 +7,17 @@ from utils import *
 
 import ipdb
 
-class MCNET(object):
+
+class FactoredMCNET(object):
     def __init__(self, image_size, batch_size=32, c_dim=3,
                  K=10, T=10, checkpoint_dir=None, is_train=True, nonlinearity="tanh",
-                 gdl_weight=1.0, residual=True):
+                 gdl_weight=1.0):
 
         self.batch_size = batch_size
         self.image_size = image_size
         self.is_train = is_train
         self.nonlinearity = nonlinearity
         self.gdl_weight = gdl_weight
-        self.res_weight = 1.0 if residual else 0.0
 
         self.gf_dim = 64
         self.df_dim = 64
@@ -137,16 +137,14 @@ class MCNET(object):
             if t == 0:
                 h_cont, res_c = self.content_enc(xt, reuse=False)
                 h_tp1 = self.comb_layers(h_dyn, h_cont, reuse=False)
-                res_connect = self.res_weight * self.residual(
-                    res_m, res_c, reuse=False)
+                res_connect = self.residual(res_m, res_c, reuse=False)
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=False)
             else:
                 enc_h, res_m = self.motion_enc(diff_in, reuse=True)
                 h_dyn, state = cell(enc_h, state, scope='lstm', reuse=True)
                 h_cont, res_c = self.content_enc(xt, reuse=reuse)
                 h_tp1 = self.comb_layers(h_dyn, h_cont, reuse=True)
-                res_connect = self.res_weight * self.residual(
-                    res_m, res_c, reuse=True)
+                res_connect = self.residual(res_m, res_c, reuse=True)
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=True)
 
             if self.c_dim == 3:
@@ -279,7 +277,7 @@ class MCNET(object):
                                   name='dec_deconv1_2', reuse=reuse))
 
         xtp1 = deconv2d(deconv1_2, output_shape=shapeout1, k_h=3, k_w=3,
-                             d_h=1, d_w=1, name='dec_deconv1_1', reuse=reuse)
+                        d_h=1, d_w=1, name='dec_deconv1_1', reuse=reuse)
         if self.nonlinearity == 'tanh':
             xtp1 = tanh(xtp1)
         elif self.nonlinearity == 'sigmoid':
@@ -297,6 +295,9 @@ class MCNET(object):
         h = linear(tf.reshape(h3, [self.batch_size, -1]), 1, 'dis_h3_lin')
 
         return tf.nn.sigmoid(h), h
+
+    # def factor_discriminator(self, latents):
+
 
     def save(self, sess, checkpoint_dir, step):
         model_name = "MCNET.model"
