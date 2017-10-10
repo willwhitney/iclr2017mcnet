@@ -10,6 +10,7 @@ import numpy as np
 import scipy.io as sio
 
 from mcnet import MCNET
+from factored_mcnet import FactoredMCNET
 from utils import *
 from os import listdir, makedirs, system
 from os.path import exists
@@ -26,6 +27,7 @@ from functools import partial
 
 hostname = socket.gethostname()
 
+
 def show(sequence):
     seq = sequence.transpose(2, 1).transpose(1, 0)
     seq = seq.transpose(3, 2).transpose(2, 1)
@@ -34,30 +36,31 @@ def show(sequence):
     img = img.squeeze()
     max_size = 12
     max_input_size = max(img.size(0), img.size(1))
-    figsize = (torch.Tensor((img.size(1), img.size(0))) * max_size / max_input_size).ceil()
-        
+    figsize = (torch.Tensor((img.size(1), img.size(0)))
+               * max_size / max_input_size).ceil()
+
     fig = plt.figure(figsize=list(figsize))
-    if img.dim() == 2: 
+    if img.dim() == 2:
         plt.gray()
 
     if img.min() < 0:
         img = inverse_transform(img.numpy())
     else:
         img = img.numpy()
-        
+
     plt.imshow(img[:, :, ::-1], interpolation='bilinear')
     plt.show()
     plt.close(fig)
 
 
 def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
-         nonlinearity, samples_every, gdl, channels, dataset, residual):
+         nonlinearity, samples_every, gdl, channels, dataset, residual, gamma):
     margin = 0.3
     updateD = True
     updateG = True
     iters = 0
     namestr = name if len(name) == 0 else "_" + name
-    prefix = (dataset.replace('/', '-')
+    prefix = ("FAC_" + dataset.replace('/', '-')
               + namestr
               + "_image_size=" + str(image_size)
               + "_channels=" + str(channels)
@@ -78,7 +81,7 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
 
     normalizer = partial(normalize_data, dataset, channels, K)
     train_data, test_data, num_workers = load_dataset(
-        dataset, T+K, image_size, channels, transforms=[normalizer])
+        dataset, T + K, image_size, channels, transforms=[normalizer])
 
     train_loader = DataLoader(train_data,
                               num_workers=num_workers,
@@ -93,7 +96,6 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
                 yield sequence
     training_batch_generator = get_training_batch()
 
-
     checkpoint_dir = "../models/" + prefix + "/"
     samples_dir = "../samples/" + prefix + "/"
     summary_dir = "../logs/" + prefix + "/"
@@ -104,21 +106,20 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
         makedirs(samples_dir)
     if not exists(summary_dir):
         makedirs(summary_dir)
-    
+
     with tf.device("/gpu:%d" % gpu[0]):
-        model = MCNET(image_size=[image_size, image_size], c_dim=channels,
-                      K=K, batch_size=batch_size, T=T,
-                      checkpoint_dir=checkpoint_dir, nonlinearity=nonlinearity, 
-                      gdl_weight=gdl, residual=residual)
+        model = FactoredMCNET(image_size=[image_size, image_size], c_dim=channels,
+                              K=K, batch_size=batch_size, T=T,
+                              checkpoint_dir=checkpoint_dir, nonlinearity=nonlinearity,
+                              gdl_weight=gdl, residual=residual)
         d_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
             model.d_loss, var_list=model.d_vars
         )
-        # facd_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
-        #     model.facd_loss, var_list=model.facd_vars
-        # )
+        facd_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
+            model.facd_loss, var_list=model.facd_vars
+        )
         g_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
-            # alpha * model.L_img + beta * model.L_GAN + gamma * model.L_FAC, 
-            alpha * model.L_img + beta * model.L_GAN, 
+            alpha * model.L_img + beta * model.L_GAN + gamma * model.L_FAC,
             var_list=model.g_vars
         )
         print("GDL: ", model.gdl_weight)
@@ -139,9 +140,11 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
 
         g_sum = tf.summary.merge([model.L_p_sum,
                                   model.L_gdl_sum, model.loss_sum,
-                                  model.L_GAN_sum])
+                                  model.L_GAN_sum, model.L_FAC_sum])
         d_sum = tf.summary.merge([model.d_loss_real_sum, model.d_loss_sum,
                                   model.d_loss_fake_sum])
+        facd_sum = tf.summary.merge([model.facd_loss_real_sum, model.facd_loss_sum,
+                                  model.facd_loss_fake_sum])
         writer = tf.summary.FileWriter(summary_dir, sess.graph)
 
         counter = iters + 1
@@ -159,17 +162,23 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
 
                     if updateD:
                         _, summary_str = sess.run([d_optim, d_sum],
-                                                    feed_dict={model.diff_in: diff_batch,
-                                                                model.xt: seq_batch[:, :, :, K - 1],
-                                                                model.target: seq_batch})
+                                                  feed_dict={model.diff_in: diff_batch,
+                                                             model.xt: seq_batch[:, :, :, K - 1],
+                                                             model.target: seq_batch})
                         writer.add_summary(summary_str, counter)
 
                     if updateG:
                         _, summary_str = sess.run([g_optim, g_sum],
-                                                    feed_dict={model.diff_in: diff_batch,
-                                                                model.xt: seq_batch[:, :, :, K - 1],
-                                                                model.target: seq_batch})
+                                                  feed_dict={model.diff_in: diff_batch,
+                                                             model.xt: seq_batch[:, :, :, K - 1],
+                                                             model.target: seq_batch})
                         writer.add_summary(summary_str, counter)
+                        _, summary_str = sess.run([facd_optim, facd_sum],
+                                                  feed_dict={model.diff_in: diff_batch,
+                                                             model.xt: seq_batch[:, :, :, K - 1],
+                                                             model.target: seq_batch})
+                        writer.add_summary(summary_str, counter)
+
 
                     errD_fake = model.d_loss_fake.eval({model.diff_in: diff_batch,
                                                         model.xt: seq_batch[:, :, :, K - 1],
@@ -177,12 +186,24 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
                     errD_real = model.d_loss_real.eval({model.diff_in: diff_batch,
                                                         model.xt: seq_batch[:, :, :, K - 1],
                                                         model.target: seq_batch})
+                    err_facD_fake = model.facd_loss_fake.eval({model.diff_in: diff_batch,
+                                                        model.xt: seq_batch[:, :, :, K - 1],
+                                                        model.target: seq_batch})
+                    err_facD_real = model.facd_loss_real.eval({model.diff_in: diff_batch,
+                                                        model.xt: seq_batch[:, :, :, K - 1],
+                                                        model.target: seq_batch})
+                    facD_real_outputs = model.FacD.eval({model.diff_in: diff_batch,
+                                                        model.xt: seq_batch[:, :, :, K - 1],
+                                                        model.target: seq_batch})
+                    facD_fake_outputs = model.FacD_.eval({model.diff_in: diff_batch,
+                                                        model.xt: seq_batch[:, :, :, K - 1],
+                                                        model.target: seq_batch})
                     errG = model.L_GAN.eval({model.diff_in: diff_batch,
-                                                model.xt: seq_batch[:, :, :, K - 1],
-                                                model.target: seq_batch})
+                                             model.xt: seq_batch[:, :, :, K - 1],
+                                             model.target: seq_batch})
                     errImage = model.L_img.eval({model.diff_in: diff_batch,
-                                                model.xt: seq_batch[:, :, :, K - 1],
-                                                model.target: seq_batch})
+                                                 model.xt: seq_batch[:, :, :, K - 1],
+                                                 model.target: seq_batch})
 
                     if errD_fake < margin or errD_real < margin:
                         updateD = False
@@ -195,23 +216,29 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
                     counter += 1
 
                     print(
-                        "Iters: [%2d] time: %4.4f, d_loss: %.8f, L_GAN: %.8f, L_img: %.8f"
-                        % (iters, time.time() - start_time, errD_fake + errD_real, errG, errImage)
+                        ("Iters: [%2d] time: %4.4f, d_loss: %3.4f, "
+                         "L_GAN: %3.4f, L_img: %3.4f, "
+                         "facd_loss: %3.4f, facd_real_output: %3.4f, facd_fake_output: %3.4f")
+                        % (iters, time.time() - start_time, errD_fake + errD_real,
+                            errG, errImage, err_facD_fake + err_facD_real, 
+                            facD_real_outputs.mean(), facD_fake_outputs.mean())
                     )
 
                     if (counter % samples_every) == 0:
                         samples = sess.run([model.G],
-                                            feed_dict={model.diff_in: diff_batch,
-                                                        model.xt: seq_batch[:, :, :, K - 1],
-                                                        model.target: seq_batch})[0]
+                                           feed_dict={model.diff_in: diff_batch,
+                                                      model.xt: seq_batch[:, :, :, K - 1],
+                                                      model.target: seq_batch})[0]
                         # ipdb.set_trace()
                         samples_pad = np.array(samples)
                         samples_pad.fill(0)
                         generations = np.concatenate((samples_pad, samples), 3)
-                        generations = generations[0].swapaxes(0, 2).swapaxes(1, 2)
+                        generations = generations[0].swapaxes(
+                            0, 2).swapaxes(1, 2)
                         sbatch = seq_batch[0].swapaxes(
                             0, 2).swapaxes(1, 2)
-                        generations = np.concatenate((generations, sbatch), axis=0)
+                        generations = np.concatenate(
+                            (generations, sbatch), axis=0)
                         print("Saving sample ...")
                         # ipdb.set_trace()
                         save_images(generations[:, :, :, ::-1], [2, T + K],
@@ -244,14 +271,16 @@ if __name__ == "__main__":
                         default=100000, help="Number of iterations")
     parser.add_argument("--gpu", type=int, nargs="+", dest="gpu", required=True,
                         help="GPU device id")
-    
+
     parser.add_argument("--name", default="")
     parser.add_argument("--samples_every", type=int, default=20)
     parser.add_argument("--nonlinearity", default="tanh")
     parser.add_argument("--dataset", default="mmnist")
     parser.add_argument("--channels", type=int,
                         default=3, help="how many colors the images have")
-    
+    parser.add_argument("--gamma", type=float,
+                        default=0.02, help="factor GAN loss weight")
+
     parser.add_argument("--no-residual", dest="residual", action="store_false",
                         help="set the weight of residual skip connections to 0")
     parser.set_defaults(residual=True)

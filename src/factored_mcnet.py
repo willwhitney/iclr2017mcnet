@@ -34,6 +34,12 @@ class FactoredMCNET(object):
                              K + T, c_dim]
 
         self.build_model()
+    
+    # def batch_select(self, start=None, end=None):
+    #     start_loc = None if start is None else start * latent_dim
+    #     end_loc = None if end is None else (end + 1) * latent_dim
+
+
 
     def build_model(self):
         self.diff_in = tf.placeholder(
@@ -60,13 +66,20 @@ class FactoredMCNET(object):
         # false_latents = tf.concat(false_latents, 0)
 
         true_latents = tf.concat(latents, 0)
+        latents = tf.stack(latents)
         false_latents = []
-        for latent in latents:
+        for latent_index in range(latents.shape[0]):
+            latent = latents[latent_index]
+            fac_dim = 3
+
             # shuffle the z1s and z2s within each timestep to get false examples
-            z1 = latents[:, :latent.shape[1]//2]
-            z2 = latents[:, latent.shape[1]//2:]
+            z1 = latent[:, :, :, :latent.shape[fac_dim]//2]
+            z2 = latent[:, :, :, latent.shape[fac_dim]//2:]
+
+            # shuffle which batch elements are in which locations
             z2 = tf.random_shuffle(z2)
-            false_latent = tf.concat([z1, z2], 1)
+            # ipdb.set_trace()
+            false_latent = tf.concat([z1, z2], fac_dim)
             false_latents.append(false_latent)
         false_latents = tf.concat(false_latents, 0)
         # latents_Dinput = tf.concat((true_latents, false_latents), 0)
@@ -151,7 +164,7 @@ class FactoredMCNET(object):
 
             self.L_FAC = tf.reduce_mean(
                 tf.nn.sigmoid_cross_entropy_with_logits(
-                    logits=FacD_logits, labels=(tf.ones_like(self.D_)/2)
+                    logits=self.FacD_logits, labels=(tf.ones_like(self.D_)/2)
                 )
             )
 
@@ -161,6 +174,7 @@ class FactoredMCNET(object):
             self.L_GAN_sum = tf.summary.scalar("L_GAN", self.L_GAN)
             self.L_FAC_sum = tf.summary.scalar("L_FAC", self.L_FAC)
             self.d_loss_sum = tf.summary.scalar("d_loss", self.d_loss)
+            self.facd_loss_sum = tf.summary.scalar("d_loss", self.facd_loss)
             self.d_loss_real_sum = tf.summary.scalar(
                 "d_loss_real", self.d_loss_real)
             self.d_loss_fake_sum = tf.summary.scalar(
@@ -174,11 +188,16 @@ class FactoredMCNET(object):
             self.g_vars = [var for var in self.t_vars
                            if 'DIS' not in var.name and 'FAC' not in var.name]
             self.d_vars = [var for var in self.t_vars if 'DIS' in var.name]
-            self.fac_vars = [var for var in self.t_vars if 'FAC' in var.name]
+            self.facd_vars = [var for var in self.t_vars if 'FAC' in var.name]
             num_param = 0.0
             for var in self.g_vars:
                 num_param += int(np.prod(var.get_shape()))
             print("Number of parameters: %d" % num_param)
+
+            # content_inputs = 
+            # self.analogies = 
+
+
         self.saver = tf.train.Saver(max_to_keep=10)
 
     def forward(self, diff_in, xt, cell):
@@ -194,6 +213,7 @@ class FactoredMCNET(object):
 
         pred = []
         latents = []
+        analogies = []
         # Decoder
         for t in range(self.T):
             # for t=0 we can use the encoding of the motion we already have
@@ -363,11 +383,22 @@ class FactoredMCNET(object):
         return tf.nn.sigmoid(h), h
 
     def factor_discriminator(self, latents):
-        h0 = lrelu(linear(latents, 128, name='fac_dis_h0_lin'))
-        h1 = lrelu(linear(h0, 128, name='fac_dis_h1_lin'))
-        # h2 = lrelu(linear(h1, 128, name='fac_dis_h2_lin'))
-        out = linear(h1, 1, name='fac_dis_out_lin')
-        return tf.nn.sigmoid(out), out
+        # h0 = lrelu(linear(latents, 128, name='fac_dis_h0_lin'))
+        # h1 = lrelu(linear(h0, 128, name='fac_dis_h1_lin'))
+        # # h2 = lrelu(linear(h1, 128, name='fac_dis_h2_lin'))
+        # out = linear(h1, 1, name='fac_dis_out_lin')
+        # return tf.nn.sigmoid(out), out
+        # ipdb.set_trace()
+        h0 = lrelu(conv2d(latents, self.df_dim, name='dis_h0_conv'))
+        h1 = lrelu(batch_norm(conv2d(h0, self.df_dim * 2, name='dis_h1_conv'),
+                              "bn1"))
+        h2 = lrelu(batch_norm(conv2d(h1, self.df_dim * 4, name='dis_h2_conv'),
+                              "bn2"))
+        h3 = lrelu(batch_norm(conv2d(h2, self.df_dim * 8, name='dis_h3_conv'),
+                              "bn3"))
+        h = linear(tf.reshape(h3, [self.batch_size, -1]), 1, 'dis_h3_lin')
+
+        return tf.nn.sigmoid(h), h
 
 
     def save(self, sess, checkpoint_dir, step):
