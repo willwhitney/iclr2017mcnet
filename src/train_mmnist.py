@@ -51,7 +51,7 @@ def show(sequence):
 
 
 def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
-         nonlinearity, samples_every, gdl, channels, dataset, residual):
+         nonlinearity, samples_every, gdl, channels, dataset, residual, planes):
     margin = 0.3
     updateD = True
     updateG = True
@@ -59,12 +59,9 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
     namestr = name if len(name) == 0 else "_" + name
     prefix = (dataset.replace('/', '-')
               + namestr
-              + "_image_size=" + str(image_size)
               + "_channels=" + str(channels)
-              + "_K=" + str(K)
-              + "_T=" + str(T)
-              + "_batch_size=" + str(batch_size)
               + "_alpha=" + str(alpha)
+              + "_planes=" + str(planes)
               + "_beta=" + str(beta)
               + "_lr=" + str(lr)
               + "_nonlin=" + str(nonlinearity)
@@ -109,7 +106,7 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
         model = MCNET(image_size=[image_size, image_size], c_dim=channels,
                       K=K, batch_size=batch_size, T=T,
                       checkpoint_dir=checkpoint_dir, nonlinearity=nonlinearity, 
-                      gdl_weight=gdl, residual=residual)
+                      gdl_weight=gdl, residual=residual, planes=planes)
         d_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
             model.d_loss, var_list=model.d_vars
         )
@@ -125,7 +122,7 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
 
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9)
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True,
-                                          log_device_placement=False,
+                                          log_device_placement=True,
                                           intra_op_parallelism_threads=3,
                                           inter_op_parallelism_threads=3,
                                           gpu_options=gpu_options)) as sess:
@@ -252,6 +249,8 @@ if __name__ == "__main__":
     parser.add_argument("--channels", type=int,
                         default=3, help="how many colors the images have")
     
+    parser.add_argument("--planes", type=int,
+                        default=256, help="the number of planes in h_dyn")
     parser.add_argument("--no-residual", dest="residual", action="store_false",
                         help="set the weight of residual skip connections to 0")
     parser.set_defaults(residual=True)

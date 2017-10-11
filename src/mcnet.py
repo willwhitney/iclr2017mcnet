@@ -10,13 +10,14 @@ import ipdb
 class MCNET(object):
     def __init__(self, image_size, batch_size=32, c_dim=3,
                  K=10, T=10, checkpoint_dir=None, is_train=True, nonlinearity="tanh",
-                 gdl_weight=1.0, residual=True):
+                 gdl_weight=1.0, residual=True, planes=256):
 
         self.batch_size = batch_size
         self.image_size = image_size
         self.is_train = is_train
         self.nonlinearity = nonlinearity
         self.gdl_weight = gdl_weight
+        self.convlstm_output_planes = planes
         self.res_weight = 1.0 if residual else 0.0
 
         self.gf_dim = 64
@@ -42,7 +43,7 @@ class MCNET(object):
             tf.float32, self.target_shape, name='target')
 
         cell = BasicConvLSTMCell([self.image_size[0] / 8, self.image_size[1] / 8],
-                                 [3, 3], 256)
+                                 [3, 3], self.convlstm_output_planes)
         pred = self.forward(self.diff_in, self.xt, cell)
 
         self.G = tf.concat(axis=3, values=pred)
@@ -123,7 +124,7 @@ class MCNET(object):
     def forward(self, diff_in, xt, cell):
         # Initial state
         state = tf.zeros([self.batch_size, self.image_size[0] / 8,
-                          self.image_size[1] / 8, 512])
+                          self.image_size[1] / 8,  2 * self.convlstm_output_planes])
         reuse = False
         # Encoder
         for t in range(self.K - 1):
