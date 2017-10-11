@@ -11,7 +11,7 @@ import ipdb
 class FactoredMCNET(object):
     def __init__(self, image_size, batch_size=32, c_dim=3,
                  K=10, T=10, checkpoint_dir=None, is_train=True, nonlinearity="tanh",
-                 gdl_weight=1.0, residual=True, n_latents=2):
+                 gdl_weight=1.0, residual=True, n_latents=2, planes=256):
 
         self.batch_size = batch_size
         self.image_size = image_size
@@ -19,7 +19,7 @@ class FactoredMCNET(object):
         self.nonlinearity = nonlinearity
         self.gdl_weight = gdl_weight
         self.n_latents = n_latents
-        self.convlstm_output_planes = 256
+        self.convlstm_output_planes = planes
         self.latent_dim = self.convlstm_output_planes // n_latents
         self.res_weight = 1.0 if residual else 0.0
 
@@ -283,7 +283,8 @@ class FactoredMCNET(object):
             for l in range(self.n_latents):
                 new_input = self.batch_swap(latents[0], h_dyn, l)
                 frozen_h_tp1 = self.comb_layers(new_input, h_cont, reuse=True)
-                frozen_gen = self.dec_cnn(h_tp1, res_connect, reuse=True)
+                frozen_gen = self.dec_cnn(
+                    frozen_h_tp1, res_connect, reuse=True)
                 frozengens.append(self.reshape_image(frozen_gen))
             # frozengens.append(frozengen)
 

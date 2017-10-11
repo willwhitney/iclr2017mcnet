@@ -54,7 +54,8 @@ def show(sequence):
 
 
 def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
-         nonlinearity, samples_every, gdl, channels, dataset, residual, gamma):
+         nonlinearity, samples_every, gdl, channels, dataset, residual, gamma, 
+         latents, planes):
     margin = 0.3
     updateD = True
     updateG = True
@@ -62,12 +63,8 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
     namestr = name if len(name) == 0 else "_" + name
     prefix = ("FAC_" + dataset.replace('/', '-')
               + namestr
-              + "_image_size=" + str(image_size)
-              + "_channels=" + str(channels)
-              + "_K=" + str(K)
-              + "_T=" + str(T)
-              + "_batch_size=" + str(batch_size)
-              + "_alpha=" + str(alpha)
+              + "_latents=" + str(latents)
+              + "_planes=" + str(planes)
               + "_beta=" + str(beta)
               + "_lr=" + str(lr)
               + "_nonlin=" + str(nonlinearity)
@@ -112,7 +109,8 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
         model = FactoredMCNET(image_size=[image_size, image_size], c_dim=channels,
                               K=K, batch_size=batch_size, T=T,
                               checkpoint_dir=checkpoint_dir, nonlinearity=nonlinearity,
-                              gdl_weight=gdl, residual=residual)
+                              gdl_weight=gdl, residual=residual,
+                              n_latents=latents, planes=planes)
         d_optim = tf.train.AdamOptimizer(lr, beta1=0.5).minimize(
             model.d_loss, var_list=model.d_vars
         )
@@ -294,8 +292,13 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default="mmnist")
     parser.add_argument("--channels", type=int,
                         default=3, help="how many colors the images have")
+
+    parser.add_argument("--planes", type=int,
+                        default=256, help="the number of planes in h_dyn")
+    parser.add_argument("--latents", type=int,
+                        default=2, help="the number of latent factors")
     parser.add_argument("--gamma", type=float,
-                        default=0.02, help="factor GAN loss weight")
+                        default=0.1, help="factor GAN loss weight")
 
     parser.add_argument("--no-residual", dest="residual", action="store_false",
                         help="set the weight of residual skip connections to 0")
