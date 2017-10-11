@@ -72,6 +72,7 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
               + "_lr=" + str(lr)
               + "_nonlin=" + str(nonlinearity)
               + "_res=" + str(residual)
+              + "_gamma=" + str(gamma)
               + "_gdl=" + str(gdl))
 
     print("\n" + prefix + "\n")
@@ -225,24 +226,39 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
                     )
 
                     if (counter % samples_every) == 0:
-                        samples = sess.run([model.G],
+                        samples, frozengens = sess.run([model.G, model.frozengens],
                                            feed_dict={model.diff_in: diff_batch,
                                                       model.xt: seq_batch[:, :, :, K - 1],
-                                                      model.target: seq_batch})[0]
+                                                      model.target: seq_batch})
+
                         # ipdb.set_trace()
-                        samples_pad = np.array(samples)
-                        samples_pad.fill(0)
-                        generations = np.concatenate((samples_pad, samples), 3)
-                        generations = generations[0].swapaxes(
-                            0, 2).swapaxes(1, 2)
-                        sbatch = seq_batch[0].swapaxes(
-                            0, 2).swapaxes(1, 2)
-                        generations = np.concatenate(
-                            (generations, sbatch), axis=0)
+
                         print("Saving sample ...")
-                        # ipdb.set_trace()
-                        save_images(generations[:, :, :, ::-1], [2, T + K],
-                                    samples_dir + "train_%s.png" % (iters))
+                        for s in range(4):
+                            # batchsize x img_width x img_height x T x n_latents + 1 x channels
+                            frozen_expanded = frozengens.reshape(batch_size, 128, 128, T, 3, 3)
+                            save_images(frozen_expanded[s].swapaxes(2, 3)
+                                        .reshape(128, 128, 30, 3).swapaxes(0, 2)
+                                        .swapaxes(1, 2)[:, :, :, ::-1], [3, 10], 
+                                        samples_dir + "frozen_%s_%s.png" % (iters, s))
+
+                            f_reshaped = frozengens.reshape(8, 128, 128, 10, 3, 3)
+                            samples_pad = np.array(samples)
+                            samples_pad.fill(0)
+                            generations = np.concatenate((samples_pad, samples), 3)
+
+                            # gives 10x128x128x3
+                            gen = generations[s].swapaxes(
+                                0, 2).swapaxes(1, 2)
+                            sbatch = seq_batch[s].swapaxes(
+                                0, 2).swapaxes(1, 2)
+
+                            # gives 20x128x128x3
+                            gen = np.concatenate(
+                                (gen, sbatch), axis=0)
+                            # ipdb.set_trace()
+                            save_images(gen[:, :, :, ::-1], [2, T + K],
+                                        samples_dir + "train_%s_%s.png" % (iters, s))
                     if np.mod(counter, 500) == 2:
                         model.save(sess, checkpoint_dir, counter)
 

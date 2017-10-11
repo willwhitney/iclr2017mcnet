@@ -19,7 +19,8 @@ class FactoredMCNET(object):
         self.nonlinearity = nonlinearity
         self.gdl_weight = gdl_weight
         self.n_latents = n_latents
-        self.latent_dim = 256 // n_latents
+        self.convlstm_output_planes = 256
+        self.latent_dim = self.convlstm_output_planes // n_latents
         self.res_weight = 1.0 if residual else 0.0
 
         self.gf_dim = 64
@@ -66,8 +67,10 @@ class FactoredMCNET(object):
             tf.float32, self.target_shape, name='target')
 
         cell = BasicConvLSTMCell([self.image_size[0] / 8, self.image_size[1] / 8],
-                                 [3, 3], 256)
-        pred, latents = self.forward(self.diff_in, self.xt, cell)
+                                 [3, 3], self.convlstm_output_planes)
+        pred, latents, frozengens = self.forward(self.diff_in, self.xt, cell)
+        self.frozengens = tf.concat(frozengens, 3)
+
         # latents_Einput = tf.concat(latents, 0)
         # latents_Etarget = tf.ones(latents_Einput.shape) / 2
 
@@ -236,10 +239,14 @@ class FactoredMCNET(object):
 
         self.saver = tf.train.Saver(max_to_keep=10)
 
+    def reshape_image(self, tensor):
+        return tf.reshape(tensor, [self.batch_size, self.image_size[0],
+                                   self.image_size[1], 1, self.c_dim])
+
     def forward(self, diff_in, xt, cell):
         # Initial state
         state = tf.zeros([self.batch_size, self.image_size[0] / 8,
-                          self.image_size[1] / 8, 512])
+                          self.image_size[1] / 8, 2 * self.convlstm_output_planes])
         reuse = False
         # Encoder
         for t in range(self.K - 1):
@@ -249,7 +256,8 @@ class FactoredMCNET(object):
 
         pred = []
         latents = []
-        analogies = []
+        frozengens = []
+
         # Decoder
         for t in range(self.T):
             # for t=0 we can use the encoding of the motion we already have
@@ -269,6 +277,18 @@ class FactoredMCNET(object):
                                self.residual(res_m, res_c, reuse=True)]
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=True)
             latents.append(h_dyn)
+
+            # frozengens.append(self.reshape_image(xt))
+            frozengens.append(self.reshape_image(x_hat))
+            for l in range(self.n_latents):
+                new_input = self.batch_swap(latents[0], h_dyn, l)
+                frozen_h_tp1 = self.comb_layers(new_input, h_cont, reuse=True)
+                frozen_gen = self.dec_cnn(h_tp1, res_connect, reuse=True)
+                frozengens.append(self.reshape_image(frozen_gen))
+            # frozengens.append(frozengen)
+
+
+
             if self.c_dim == 3:
                 # Network outputs are BGR so they need to be reversed to use
                 # rgb_to_grayscale
@@ -294,7 +314,7 @@ class FactoredMCNET(object):
             pred.append(tf.reshape(x_hat, [self.batch_size, self.image_size[0],
                                            self.image_size[1], 1, self.c_dim]))
 
-        return pred, latents
+        return pred, latents, frozengens
 
     def motion_enc(self, diff_in, reuse):
         res_in = []
