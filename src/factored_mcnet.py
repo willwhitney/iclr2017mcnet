@@ -11,13 +11,15 @@ import ipdb
 class FactoredMCNET(object):
     def __init__(self, image_size, batch_size=32, c_dim=3,
                  K=10, T=10, checkpoint_dir=None, is_train=True, nonlinearity="tanh",
-                 gdl_weight=1.0, residual=True):
+                 gdl_weight=1.0, residual=True, n_latents=2):
 
         self.batch_size = batch_size
         self.image_size = image_size
         self.is_train = is_train
         self.nonlinearity = nonlinearity
         self.gdl_weight = gdl_weight
+        self.n_latents = n_latents
+        self.latent_dim = 256 // n_latents
         self.res_weight = 1.0 if residual else 0.0
 
         self.gf_dim = 64
@@ -35,11 +37,26 @@ class FactoredMCNET(object):
 
         self.build_model()
     
-    # def batch_select(self, start=None, end=None):
-    #     start_loc = None if start is None else start * latent_dim
-    #     end_loc = None if end is None else (end + 1) * latent_dim
+    def batch_select_one(self, latent, i):
+        start_loc = i * self.latent_dim
+        end_loc = (i + 1) * self.latent_dim
+        return latent[:, :, :, start_loc: end_loc]
+    
+    def batch_select(self, latent, start=None, end=None):
+        start_loc = None if start is None else start * self.latent_dim
+        end_loc = None if end is None else (end + 1) * self.latent_dim
+        # ipdb.set_trace()
+        return latent[:, :, :, start_loc: end_loc]
 
+    def batch_swap(self, a, b, i):
+        before = self.batch_select(a, end=i-1)
+        after = self.batch_select(a, start=i+1)
+        swapped = self.batch_select_one(b, i)
+        # ipdb.set_trace()
 
+        return tf.concat([before, swapped, after], 3)
+
+    
 
     def build_model(self):
         self.diff_in = tf.placeholder(
@@ -68,19 +85,38 @@ class FactoredMCNET(object):
         true_latents = tf.concat(latents, 0)
         latents = tf.stack(latents)
         false_latents = []
-        for latent_index in range(latents.shape[0]):
-            latent = latents[latent_index]
+        for timestep in range(latents.shape[0]):
+            latent = latents[timestep]
             fac_dim = 3
 
+            # for each latent vector in the batch, substitute in one
+            # independent factor from the next latent vector
+
+            for i in range(self.batch_size):
+                # swapped_index = tf.random_uniform(
+                #     [1], minval=0, maxval=self.n_latents, dtype=tf.int32)
+
+                # I wanted to do this by picking a random one, but that's
+                # horrifyingly hard in tensorflow
+                swapped_index = (timestep * self.T + i) % self.n_latents
+
+                other = (i+1) % self.batch_size
+                a = tf.expand_dims(latent[i], 0)
+                b = tf.expand_dims(latent[other], 0)
+                
+                false_latent = self.batch_swap(a, b, swapped_index)
+                false_latents.append(false_latent)
+
+
             # shuffle the z1s and z2s within each timestep to get false examples
-            z1 = latent[:, :, :, :latent.shape[fac_dim]//2]
-            z2 = latent[:, :, :, latent.shape[fac_dim]//2:]
+            # z1 = latent[:, :, :, :latent.shape[fac_dim]//2]
+            # z2 = latent[:, :, :, latent.shape[fac_dim]//2:]
 
             # shuffle which batch elements are in which locations
-            z2 = tf.random_shuffle(z2)
-            # ipdb.set_trace()
-            false_latent = tf.concat([z1, z2], fac_dim)
-            false_latents.append(false_latent)
+            # z2 = tf.random_shuffle(z2)
+            # false_latent = tf.concat([z1, z2], fac_dim)
+            # false_latents.append(false_latent)
+
         false_latents = tf.concat(false_latents, 0)
         # latents_Dinput = tf.concat((true_latents, false_latents), 0)
         # latents_Dtarget = tf.concat((tf.ones(true_latents.shape),
