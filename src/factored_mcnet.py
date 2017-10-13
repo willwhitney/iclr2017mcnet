@@ -57,6 +57,18 @@ class FactoredMCNET(object):
 
         return tf.concat([before, swapped, after], 3)
 
+    def dup_latent(self, batch, latent_to_dup, source_batch_element_index):
+        before = self.batch_select(batch, end=latent_to_dup-1)
+        after = self.batch_select(batch, start=latent_to_dup+1)
+
+        batch_latent_source = self.batch_select_one(batch, latent_to_dup)
+        selected_latent = batch_latent_source[source_batch_element_index]
+
+        unsqueezed = tf.expand_dims(selected_latent, 0)
+        expanded = tf.tile(unsqueezed, [self.batch_size, 1, 1, 1])
+
+        return tf.concat([before, expanded, after], 3)
+
     
 
     def build_model(self):
@@ -68,8 +80,9 @@ class FactoredMCNET(object):
 
         cell = BasicConvLSTMCell([self.image_size[0] / 8, self.image_size[1] / 8],
                                  [3, 3], self.convlstm_output_planes)
-        pred, latents, frozengens = self.forward(self.diff_in, self.xt, cell)
+        pred, latents, frozengens, crossgens = self.forward(self.diff_in, self.xt, cell)
         self.frozengens = tf.concat(frozengens, 3)
+        self.crossgens = crossgens
 
         # latents_Einput = tf.concat(latents, 0)
         # latents_Etarget = tf.ones(latents_Einput.shape) / 2
@@ -257,6 +270,26 @@ class FactoredMCNET(object):
         pred = []
         latents = []
         frozengens = []
+        crossgens = [[] for _ in range(self.n_latents + 1)]
+
+        self.diffs = {
+            'in': [],
+            'comb': [],
+            'gen': [],
+        }
+
+        self.frozens = {
+            'in': [],
+            'comb': [],
+            'gen': [],
+        }
+
+        self.crosses = {
+            'in': [],
+            'comb': [],
+            'gen': [],
+        }
+        
 
         # Decoder
         for t in range(self.T):
@@ -264,29 +297,68 @@ class FactoredMCNET(object):
             # for t>0 we need to run cell forward on one more image
             if t == 0:
                 h_cont, res_c = self.content_enc(xt, reuse=False)
+                h_dyn = tf.identity(h_dyn, name="orig_in_t{}".format(t))
                 h_tp1 = self.comb_layers(h_dyn, h_cont, reuse=False)
+                h_tp1 = tf.identity(h_tp1, name="comb_t{}".format(t))
                 res_connect = [self.res_weight * r for r in
                                self.residual(res_m, res_c, reuse=False)]
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=False)
+                x_hat = tf.identity(x_hat, name="gen_t{}".format(t))
             else:
                 enc_h, res_m = self.motion_enc(diff_in, reuse=True)
                 h_dyn, state = cell(enc_h, state, scope='lstm', reuse=True)
+                h_dyn = tf.identity(h_dyn, name="orig_in_t{}".format(t))
                 h_cont, res_c = self.content_enc(xt, reuse=reuse)
                 h_tp1 = self.comb_layers(h_dyn, h_cont, reuse=True)
+                h_tp1 = tf.identity(h_tp1, name="comb_t{}".format(t))
                 res_connect = [self.res_weight * r for r in
                                self.residual(res_m, res_c, reuse=True)]
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=True)
+                x_hat = tf.identity(x_hat, name="gen_t{}".format(t))
             latents.append(h_dyn)
 
             # frozengens.append(self.reshape_image(xt))
             frozengens.append(self.reshape_image(x_hat))
             for l in range(self.n_latents):
-                new_input = self.batch_swap(latents[0], h_dyn, l)
+                new_input = tf.identity(self.batch_swap(latents[0], h_dyn, l),
+                                        name="froze_in_t{}_l{}".format(t, l))
                 frozen_h_tp1 = self.comb_layers(new_input, h_cont, reuse=True)
+                frozen_h_tp1 = tf.identity(frozen_h_tp1,
+                                           name="froze_comb_t{}_l{}".format(t, l))
                 frozen_gen = self.dec_cnn(
                     frozen_h_tp1, res_connect, reuse=True)
+                frozen_gen = tf.identity(frozen_gen,
+                                         name="froze_gen_t{}_l{}".format(t, l))
                 frozengens.append(self.reshape_image(frozen_gen))
-            # frozengens.append(frozengen)
+
+                self.frozens['in'].append(new_input)
+                self.frozens['comb'].append(frozen_h_tp1)
+                self.frozens['gen'].append(frozen_gen)
+
+                # self.diffs['in'].append(new_input - h_dyn)
+                # self.diffs['comb'].append(frozen_h_tp1 - h_tp1)
+                # self.diffs['gen'].append(frozen_gen - x_hat)
+
+            crossgens[0].append(self.reshape_image(x_hat))
+            for l in range(self.n_latents):
+                new_input = tf.identity(self.dup_latent(h_dyn, l, 0),
+                                        name="cross_in_t{}_l{}".format(t, l))
+                crossed_h_tp1 = self.comb_layers(new_input, h_cont, reuse=True)
+                crossed_h_tp1 = tf.identity(crossed_h_tp1,
+                                           name="cross_comb_t{}_l{}".format(t, l))
+                crossed_gen = self.dec_cnn(
+                    crossed_h_tp1, res_connect, reuse=True)
+                crossed_gen = tf.identity(crossed_gen,
+                                         name="cross_gen_t{}_l{}".format(t, l))
+                crossgens[l+1].append(self.reshape_image(crossed_gen))
+
+                self.crosses['in'].append(new_input)
+                self.crosses['comb'].append(crossed_h_tp1)
+                self.crosses['gen'].append(crossed_gen)
+
+                self.diffs['in'].append(new_input - h_dyn)
+                self.diffs['comb'].append(crossed_h_tp1 - h_tp1)
+                self.diffs['gen'].append(crossed_gen - x_hat)
 
 
 
@@ -315,7 +387,7 @@ class FactoredMCNET(object):
             pred.append(tf.reshape(x_hat, [self.batch_size, self.image_size[0],
                                            self.image_size[1], 1, self.c_dim]))
 
-        return pred, latents, frozengens
+        return pred, latents, frozengens, crossgens
 
     def motion_enc(self, diff_in, reuse):
         res_in = []

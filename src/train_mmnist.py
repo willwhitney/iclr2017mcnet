@@ -5,6 +5,7 @@ import imageio
 import os
 
 import tensorflow as tf
+from tensorflow.python import debug as tf_debug
 import scipy.misc as sm
 import numpy as np
 import scipy.io as sio
@@ -121,102 +122,103 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
         print("GDL: ", model.gdl_weight)
 
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.9)
-    with tf.Session(config=tf.ConfigProto(allow_soft_placement=True,
-                                          log_device_placement=True,
-                                          intra_op_parallelism_threads=3,
-                                          inter_op_parallelism_threads=3,
-                                          gpu_options=gpu_options)) as sess:
+    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True,
+                                            log_device_placement=True,
+                                            intra_op_parallelism_threads=3,
+                                            inter_op_parallelism_threads=3,
+                                            gpu_options=gpu_options))
 
-        tf.global_variables_initializer().run()
+    tf.global_variables_initializer().run()
 
-        if model.load(sess, checkpoint_dir):
-            print(" [*] Load SUCCESS")
-        else:
-            print(" [!] Load failed...")
+    if model.load(sess, checkpoint_dir):
+        print(" [*] Load SUCCESS")
+    else:
+        print(" [!] Load failed...")
 
-        g_sum = tf.summary.merge([model.L_p_sum,
-                                  model.L_gdl_sum, model.loss_sum,
-                                  model.L_GAN_sum])
-        d_sum = tf.summary.merge([model.d_loss_real_sum, model.d_loss_sum,
-                                  model.d_loss_fake_sum])
-        writer = tf.summary.FileWriter(summary_dir, sess.graph)
+    g_sum = tf.summary.merge([model.L_p_sum,
+                                model.L_gdl_sum, model.loss_sum,
+                                model.L_GAN_sum])
+    d_sum = tf.summary.merge([model.d_loss_real_sum, model.d_loss_sum,
+                                model.d_loss_fake_sum])
+    writer = tf.summary.FileWriter(summary_dir, sess.graph)
 
-        counter = iters + 1
-        start_time = time.time()
+    counter = iters + 1
+    start_time = time.time()
 
-        with Parallel(n_jobs=batch_size) as parallel:
-            while iters < num_iter:
-                for batch_index in range(100000):
-                    seq_batch, diff_batch = next(training_batch_generator)
-                    # show(seq_batch[0])
-                    # show(diff_batch[0])
+    with Parallel(n_jobs=batch_size) as parallel:
+        while iters < num_iter:
+            for batch_index in range(100000):
+                seq_batch, diff_batch = next(training_batch_generator)
+                # show(seq_batch[0])
+                # show(diff_batch[0])
+                # ipdb.set_trace()
+                seq_batch = seq_batch.numpy()
+                diff_batch = diff_batch.numpy()
+
+                if updateD:
+                    _, summary_str = sess.run([d_optim, d_sum],
+                                                feed_dict={model.diff_in: diff_batch,
+                                                            model.xt: seq_batch[:, :, :, K - 1],
+                                                            model.target: seq_batch})
+                    writer.add_summary(summary_str, counter)
+
+                if updateG:
+                    _, summary_str = sess.run([g_optim, g_sum],
+                                                feed_dict={model.diff_in: diff_batch,
+                                                            model.xt: seq_batch[:, :, :, K - 1],
+                                                            model.target: seq_batch})
+                    writer.add_summary(summary_str, counter)
+
+                errD_fake = model.d_loss_fake.eval({model.diff_in: diff_batch,
+                                                    model.xt: seq_batch[:, :, :, K - 1],
+                                                    model.target: seq_batch})
+                errD_real = model.d_loss_real.eval({model.diff_in: diff_batch,
+                                                    model.xt: seq_batch[:, :, :, K - 1],
+                                                    model.target: seq_batch})
+                errG = model.L_GAN.eval({model.diff_in: diff_batch,
+                                            model.xt: seq_batch[:, :, :, K - 1],
+                                            model.target: seq_batch})
+                errImage = model.L_img.eval({model.diff_in: diff_batch,
+                                            model.xt: seq_batch[:, :, :, K - 1],
+                                            model.target: seq_batch})
+
+                if errD_fake < margin or errD_real < margin:
+                    updateD = False
+                if errD_fake > (1. - margin) or errD_real > (1. - margin):
+                    updateG = False
+                if not updateD and not updateG:
+                    updateD = True
+                    updateG = True
+
+                counter += 1
+
+                print(
+                    "Iters: [%2d] time: %4.4f, d_loss: %.8f, L_GAN: %.8f, L_img: %.8f"
+                    % (iters, time.time() - start_time, errD_fake + errD_real, errG, errImage)
+                )
+
+                if (counter % samples_every) == 0:
+                    samples = sess.run([model.G],
+                                        feed_dict={model.diff_in: diff_batch,
+                                                    model.xt: seq_batch[:, :, :, K - 1],
+                                                    model.target: seq_batch})[0]
                     # ipdb.set_trace()
-                    seq_batch = seq_batch.numpy()
-                    diff_batch = diff_batch.numpy()
+                    samples_pad = np.array(samples)
+                    samples_pad.fill(0)
+                    generations = np.concatenate((samples_pad, samples), 3)
+                    generations = generations[0].swapaxes(0, 2).swapaxes(1, 2)
+                    sbatch = seq_batch[0].swapaxes(
+                        0, 2).swapaxes(1, 2)
+                    generations = np.concatenate((generations, sbatch), axis=0)
+                    print("Saving sample ...")
+                    # ipdb.set_trace()
+                    save_images(generations[:, :, :, ::-1], [2, T + K],
+                                samples_dir + "train_%s.png" % (iters))
+                if np.mod(counter, 500) == 2:
+                    model.save(sess, checkpoint_dir, counter)
 
-                    if updateD:
-                        _, summary_str = sess.run([d_optim, d_sum],
-                                                    feed_dict={model.diff_in: diff_batch,
-                                                                model.xt: seq_batch[:, :, :, K - 1],
-                                                                model.target: seq_batch})
-                        writer.add_summary(summary_str, counter)
-
-                    if updateG:
-                        _, summary_str = sess.run([g_optim, g_sum],
-                                                    feed_dict={model.diff_in: diff_batch,
-                                                                model.xt: seq_batch[:, :, :, K - 1],
-                                                                model.target: seq_batch})
-                        writer.add_summary(summary_str, counter)
-
-                    errD_fake = model.d_loss_fake.eval({model.diff_in: diff_batch,
-                                                        model.xt: seq_batch[:, :, :, K - 1],
-                                                        model.target: seq_batch})
-                    errD_real = model.d_loss_real.eval({model.diff_in: diff_batch,
-                                                        model.xt: seq_batch[:, :, :, K - 1],
-                                                        model.target: seq_batch})
-                    errG = model.L_GAN.eval({model.diff_in: diff_batch,
-                                                model.xt: seq_batch[:, :, :, K - 1],
-                                                model.target: seq_batch})
-                    errImage = model.L_img.eval({model.diff_in: diff_batch,
-                                                model.xt: seq_batch[:, :, :, K - 1],
-                                                model.target: seq_batch})
-
-                    if errD_fake < margin or errD_real < margin:
-                        updateD = False
-                    if errD_fake > (1. - margin) or errD_real > (1. - margin):
-                        updateG = False
-                    if not updateD and not updateG:
-                        updateD = True
-                        updateG = True
-
-                    counter += 1
-
-                    print(
-                        "Iters: [%2d] time: %4.4f, d_loss: %.8f, L_GAN: %.8f, L_img: %.8f"
-                        % (iters, time.time() - start_time, errD_fake + errD_real, errG, errImage)
-                    )
-
-                    if (counter % samples_every) == 0:
-                        samples = sess.run([model.G],
-                                            feed_dict={model.diff_in: diff_batch,
-                                                        model.xt: seq_batch[:, :, :, K - 1],
-                                                        model.target: seq_batch})[0]
-                        # ipdb.set_trace()
-                        samples_pad = np.array(samples)
-                        samples_pad.fill(0)
-                        generations = np.concatenate((samples_pad, samples), 3)
-                        generations = generations[0].swapaxes(0, 2).swapaxes(1, 2)
-                        sbatch = seq_batch[0].swapaxes(
-                            0, 2).swapaxes(1, 2)
-                        generations = np.concatenate((generations, sbatch), axis=0)
-                        print("Saving sample ...")
-                        # ipdb.set_trace()
-                        save_images(generations[:, :, :, ::-1], [2, T + K],
-                                    samples_dir + "train_%s.png" % (iters))
-                    if np.mod(counter, 500) == 2:
-                        model.save(sess, checkpoint_dir, counter)
-
-                    iters += 1
+                iters += 1
+    sess.close()
 
 
 if __name__ == "__main__":
