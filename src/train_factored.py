@@ -246,40 +246,52 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
                                     model.target: seq_batch})
                     # ipdb.set_trace()
 
-                    frozen_expanded = frozengens.reshape(batch_size, 128, 128, T, 3, 3)
-                    print("Mean difference between pixels in frozen and gen: ",
-                            (frozen_expanded[:, :, :, :, 2] - samples).mean())
-                    # ipdb.set_trace()
-                    print("Mean difference between pixels in crossover and gen: ",
-                            (np.concatenate(crossgens[1], 3) - samples).mean())
+                    
+                    # print("Mean difference between pixels in frozen and gen: ",
+                    #         (frozen_expanded[:, :, :, :, 2] - samples).mean())
+                    # # ipdb.set_trace()
+                    # print("Mean difference between pixels in crossover and gen: ",
+                    #         (np.concatenate(crossgens[1], 3) - samples).mean())
                     print("Saving sample ...")
 
-                    for l in range(1, latents+1):
+                    
+                    for s in range(4):
+                        # ipdb.set_trace()
+                        frozen_expanded = frozengens[s].reshape(128, 128, latents, T, 3)
+                        sample_row = samples[s].reshape(128,128,1,T,3)
+
+                        # top row samples, next two rows frozens
+                        frozen_image = np.concatenate([sample_row, frozen_expanded], 2)
+
+                        # squash the rows and columns of the image for saving
+                        frozen_image = frozen_image.reshape(128, 128, (latents+1) * T, channels)
+
+                        # ((latents+1) * T) x imwidth x imheight x channels
+                        frozen_image = frozen_image.swapaxes(0, 2).swapaxes(1, 2)
+                        save_images(frozen_image[:, :, :, ::-1], [latents + 1, 10],
+                                    samples_dir + "frozen_%s_%s.png" % (iters, s))
+                        # ipdb.set_trace()
+
+                    for l in range(1, latents + 1):
                         # bsize x imwidth x imheight x T x channels
                         crossover_batch = np.concatenate(crossgens[l], 3)
 
                         # bsize x T x imwidth x imheight x channels
-                        crossover_batch = crossover_batch.swapaxes(3, 1).swapaxes(2, 3)
+                        crossover_batch = crossover_batch.swapaxes(
+                            3, 1).swapaxes(2, 3)
 
                         # squash for the image saving function
                         # (bsize*T) x imwidth x imheight x channels
-                        crossover_batch = crossover_batch.reshape(batch_size * T, 128, 128, 3)
+                        crossover_batch = crossover_batch.reshape(
+                            batch_size * T, 128, 128, 3)
 
                         # each row should be a sequence
                         # each column should be different sequences at the same timestep, all
                         # generated using the same z_l
                         save_images(crossover_batch[:, :, :, ::-1], [batch_size, T],
                                     samples_dir + "cross_%s_%s.png" % (iters, l))
-
+                    
                     for s in range(4):
-                        # batchsize x img_width x img_height x T x n_latents + 1 x channels
-                        save_images(frozen_expanded[s].swapaxes(2, 3)
-                                    .reshape(128, 128, 30, 3).swapaxes(0, 2)
-                                    .swapaxes(1, 2)[:, :, :, ::-1], [3, 10], 
-                                    samples_dir + "frozen_%s_%s.png" % (iters, s))
-                        # ipdb.set_trace()
-
-
                         # f_reshaped = frozengens.reshape(8, 128, 128, 10, 3, 3)
                         samples_pad = np.array(samples)
                         samples_pad.fill(0)
@@ -297,6 +309,7 @@ def main(name, lr, batch_size, alpha, beta, image_size, K, T, num_iter, gpu,
                         # ipdb.set_trace()
                         save_images(gen[:, :, :, ::-1], [2, T + K],
                                     samples_dir + "train_%s_%s.png" % (iters, s))
+
                 if np.mod(counter, 500) == 2:
                     model.save(sess, checkpoint_dir, counter)
 

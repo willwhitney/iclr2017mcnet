@@ -256,17 +256,41 @@ class FactoredMCNET(object):
         return tf.reshape(tensor, [self.batch_size, self.image_size[0],
                                    self.image_size[1], 1, self.c_dim])
 
-    def forward(self, diff_in, xt, cell):
+    def make_diff(self, x_hat, xt):
+        if self.c_dim == 3:
+            # Network outputs are BGR so they need to be reversed to use
+            # rgb_to_grayscale
+            x_hat_rgb = tf.concat(axis=3,
+                                    values=[x_hat[:, :, :, 2:3], x_hat[:, :, :, 1:2],
+                                            x_hat[:, :, :, 0:1]])
+            xt_rgb = tf.concat(axis=3,
+                                values=[xt[:, :, :, 2:3], xt[:, :, :, 1:2],
+                                        xt[:, :, :, 0:1]])
+
+            x_hat_gray = 1. / 255. * tf.image.rgb_to_grayscale(
+                inverse_transform(x_hat_rgb) * 255.
+            )
+            xt_gray = 1. / 255. * tf.image.rgb_to_grayscale(
+                inverse_transform(xt_rgb) * 255.
+            )
+        else:
+            x_hat_gray = inverse_transform(x_hat)
+            xt_gray = inverse_transform(xt)
+
+        return x_hat_gray - xt_gray
+
+    def initialize_forward(self, cell, diff_in, reuse):
         # Initial state
         state = tf.zeros([self.batch_size, self.image_size[0] / 8,
                           self.image_size[1] / 8, 2 * self.convlstm_output_planes])
-        reuse = False
         # Encoder
         for t in range(self.K - 1):
             enc_h, res_m = self.motion_enc(diff_in[:, :, :, t, :], reuse=reuse)
             h_dyn, state = cell(enc_h, state, scope='lstm', reuse=reuse)
             reuse = True
+        return state, reuse, enc_h, res_m, h_dyn
 
+    def forward(self, first_diff_in, first_xt, cell):
         pred = []
         latents = []
         frozengens = []
@@ -290,8 +314,11 @@ class FactoredMCNET(object):
             'gen': [],
         }
         
-
-        # Decoder
+        xhats = []
+        xt = first_xt
+        state, reuse, enc_h, res_m, h_dyn = self.initialize_forward(cell,
+                                                                    first_diff_in,
+                                                                    False)
         for t in range(self.T):
             # for t=0 we can use the encoding of the motion we already have
             # for t>0 we need to run cell forward on one more image
@@ -316,10 +343,35 @@ class FactoredMCNET(object):
                 x_hat = self.dec_cnn(h_tp1, res_connect, reuse=True)
                 x_hat = tf.identity(x_hat, name="gen_t{}".format(t))
             latents.append(h_dyn)
+            xhats.append(x_hat)
 
-            # frozengens.append(self.reshape_image(xt))
-            frozengens.append(self.reshape_image(x_hat))
-            for l in range(self.n_latents):
+            diff_in = self.make_diff(x_hat, xt)
+            xt = x_hat
+            pred.append(tf.reshape(x_hat, [self.batch_size, self.image_size[0],
+                                           self.image_size[1], 1, self.c_dim]))
+
+        for l in range(self.n_latents):
+            xt = first_xt
+            state, reuse, enc_h, res_m, h_dyn = self.initialize_forward(cell,
+                                                                        first_diff_in, 
+                                                                        reuse)
+            for t in range(self.T):
+                if t == 0:
+                    h_cont, res_c = self.content_enc(xt, reuse=True)
+                    h_dyn = tf.identity(h_dyn, name="orig_in_t{}".format(t))
+                    res_connect = [self.res_weight * r for r in
+                                self.residual(res_m, res_c, reuse=True)]
+                else:
+                    enc_h, res_m = self.motion_enc(diff_in, reuse=True)
+                    h_dyn, state = cell(enc_h, state, scope='lstm', reuse=True)
+                    h_dyn = tf.identity(h_dyn, name="orig_in_t{}".format(t))
+                    h_cont, res_c = self.content_enc(xt, reuse=reuse)
+                    h_tp1 = tf.identity(h_tp1, name="comb_t{}".format(t))
+                    res_connect = [self.res_weight * r for r in
+                                self.residual(res_m, res_c, reuse=True)]
+
+
+                # frozengens.append(self.reshape_image(xhats[t]))
                 new_input = tf.identity(self.batch_swap(latents[0], h_dyn, l),
                                         name="froze_in_t{}_l{}".format(t, l))
                 frozen_h_tp1 = self.comb_layers(new_input, h_cont, reuse=True)
@@ -330,6 +382,11 @@ class FactoredMCNET(object):
                 frozen_gen = tf.identity(frozen_gen,
                                          name="froze_gen_t{}_l{}".format(t, l))
                 frozengens.append(self.reshape_image(frozen_gen))
+                h_hat = frozen_gen
+
+                diff_in = self.make_diff(x_hat, xt)
+                xt = x_hat
+
 
                 self.frozens['in'].append(new_input)
                 self.frozens['comb'].append(frozen_h_tp1)
@@ -339,8 +396,26 @@ class FactoredMCNET(object):
                 # self.diffs['comb'].append(frozen_h_tp1 - h_tp1)
                 # self.diffs['gen'].append(frozen_gen - x_hat)
 
-            crossgens[0].append(self.reshape_image(x_hat))
-            for l in range(self.n_latents):
+        for l in range(self.n_latents):
+            xt = first_xt
+            state, reuse, enc_h, res_m, h_dyn = self.initialize_forward(cell,
+                                                                        first_diff_in,
+                                                                        reuse)
+            for t in range(self.T):
+                if t == 0:
+                    h_cont, res_c = self.content_enc(xt, reuse=True)
+                    h_dyn = tf.identity(h_dyn, name="orig_in_t{}".format(t))
+                    res_connect = [self.res_weight * r for r in
+                                   self.residual(res_m, res_c, reuse=True)]
+                else:
+                    enc_h, res_m = self.motion_enc(diff_in, reuse=True)
+                    h_dyn, state = cell(enc_h, state, scope='lstm', reuse=True)
+                    h_dyn = tf.identity(h_dyn, name="orig_in_t{}".format(t))
+                    h_cont, res_c = self.content_enc(xt, reuse=reuse)
+                    h_tp1 = tf.identity(h_tp1, name="comb_t{}".format(t))
+                    res_connect = [self.res_weight * r for r in
+                                   self.residual(res_m, res_c, reuse=True)]
+
                 new_input = tf.identity(self.dup_latent(h_dyn, l, 0),
                                         name="cross_in_t{}_l{}".format(t, l))
                 crossed_h_tp1 = self.comb_layers(new_input, h_cont, reuse=True)
@@ -360,32 +435,9 @@ class FactoredMCNET(object):
                 self.diffs['comb'].append(crossed_h_tp1 - h_tp1)
                 self.diffs['gen'].append(crossed_gen - x_hat)
 
+                diff_in = self.make_diff(x_hat, xt)
+                xt = x_hat
 
-
-            if self.c_dim == 3:
-                # Network outputs are BGR so they need to be reversed to use
-                # rgb_to_grayscale
-                x_hat_rgb = tf.concat(axis=3,
-                                      values=[x_hat[:, :, :, 2:3], x_hat[:, :, :, 1:2],
-                                              x_hat[:, :, :, 0:1]])
-                xt_rgb = tf.concat(axis=3,
-                                   values=[xt[:, :, :, 2:3], xt[:, :, :, 1:2],
-                                           xt[:, :, :, 0:1]])
-
-                x_hat_gray = 1. / 255. * tf.image.rgb_to_grayscale(
-                    inverse_transform(x_hat_rgb) * 255.
-                )
-                xt_gray = 1. / 255. * tf.image.rgb_to_grayscale(
-                    inverse_transform(xt_rgb) * 255.
-                )
-            else:
-                x_hat_gray = inverse_transform(x_hat)
-                xt_gray = inverse_transform(xt)
-
-            diff_in = x_hat_gray - xt_gray
-            xt = x_hat
-            pred.append(tf.reshape(x_hat, [self.batch_size, self.image_size[0],
-                                           self.image_size[1], 1, self.c_dim]))
 
         return pred, latents, frozengens, crossgens
 
